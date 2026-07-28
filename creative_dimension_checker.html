@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Creative Dimension Checker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root {
+    --ink: #16202b;
+    --paper: #f6f7f5;
+    --line: #d9dcd6;
+    --mute: #6b7580;
+    --ok: #1f7a4d;
+    --ok-bg: #e7f3ec;
+    --bad: #b23b2e;
+    --bad-bg: #fbe9e6;
+    --accent: #2c5aa0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    padding: 32px 24px 60px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+  }
+  .sub {
+    color: var(--mute);
+    font-size: 14px;
+    margin: 0 0 28px;
+  }
+  .drop {
+    border: 1.5px dashed var(--line);
+    border-radius: 10px;
+    background: #fff;
+    padding: 36px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop.drag {
+    border-color: var(--accent);
+    background: #eef3fa;
+  }
+  .drop input { display: none; }
+  .drop-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .drop-sub { font-size: 13px; color: var(--mute); }
+  .status {
+    margin-top: 18px;
+    font-size: 13px;
+    color: var(--mute);
+    min-height: 18px;
+  }
+  .summary {
+    display: flex;
+    gap: 10px;
+    margin: 22px 0 4px;
+    flex-wrap: wrap;
+  }
+  .pill {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 999px;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.total { background: #eceef0; color: var(--ink); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 18px;
+    font-size: 13.5px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  th {
+    background: #eef0ec;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--mute);
+    font-weight: 700;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr.bad td { background: var(--bad-bg); }
+  .fname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+  .badge {
+    display: inline-block;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 5px;
+  }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.bad { background: var(--bad); color: #fff; }
+  .badge.skip { background: #eceef0; color: var(--mute); }
+  .reset {
+    margin-top: 20px;
+    background: none;
+    border: 1px solid var(--line);
+    color: var(--ink);
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .reset:hover { background: #eceef0; }
+  .empty-note { font-size: 13px; color: var(--mute); margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Creative Dimension Checker</h1>
+  <p class="sub">Drop a creative .zip (or select image files) — checks the filename's declared size against the image's actual pixel dimensions.</p>
+
+  <div class="drop" id="drop">
+    <input type="file" id="fileInput" accept=".zip,image/*" multiple>
+    <div class="drop-title">Drop a .zip or image files here</div>
+    <div class="drop-sub">or click to browse — nothing leaves your browser</div>
+  </div>
+
+  <div class="status" id="status"></div>
+  <div id="results"></div>
+</div>
+
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('drag');
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+function extractDeclaredSize(filename) {
+  // matches patterns like 970x250, 300X600, 1200x1200 etc, case-insensitive
+  const matches = [...filename.matchAll(/(\d{2,4})\s*[xX]\s*(\d{2,4})/g)];
+  if (matches.length === 0) return null;
+  // use the last match (most likely to be the size, e.g. after a date-looking number)
+  const m = matches[matches.length - 1];
+  return { w: parseInt(m[1], 10), h: parseInt(m[2], 10) };
+}
+
+function getImageDimensions(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => { reject(new Error('unreadable image')); URL.revokeObjectURL(url); };
+    img.src = url;
+  });
+}
+
+async function handleFiles(fileList) {
+  resultsEl.innerHTML = '';
+  const files = Array.from(fileList);
+  if (files.length === 0) return;
+
+  let imageEntries = [];
+
+  const zipFile = files.find(f => f.name.toLowerCase().endsWith('.zip'));
+  if (zipFile && files.length === 1) {
+    statusEl.textContent = 'Reading zip…';
+    try {
+      const zip = await JSZip.loadAsync(zipFile);
+      const entries = Object.values(zip.files).filter(f =>
+        !f.dir && /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name) && !f.name.includes('__MACOSX')
+      );
+      for (const entry of entries) {
+        const blob = await entry.async('blob');
+        imageEntries.push({ name: entry.name.split('/').pop(), blob });
+      }
+    } catch (err) {
+      statusEl.textContent = 'Could not read zip: ' + err.message;
+      return;
+    }
+  } else {
+    imageEntries = files
+      .filter(f => /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name))
+      .map(f => ({ name: f.name, blob: f }));
+  }
+
+  if (imageEntries.length === 0) {
+    statusEl.textContent = 'No image files found.';
+    return;
+  }
+
+  statusEl.textContent = `Checking ${imageEntries.length} file(s)…`;
+
+  const rows = [];
+  for (const { name, blob } of imageEntries) {
+    const declared = extractDeclaredSize(name);
+    let actual = null, error = null;
+    try {
+      actual = await getImageDimensions(blob);
+    } catch (e) {
+      error = e.message;
+    }
+    rows.push({ name, declared, actual, error });
+  }
+
+  statusEl.textContent = `Checked ${rows.length} file(s).`;
+  render(rows);
+}
+
+function render(rows) {
+  const mismatches = rows.filter(r => r.declared && r.actual &&
+    (r.declared.w !== r.actual.w || r.declared.h !== r.actual.h));
+  const matches = rows.filter(r => r.declared && r.actual &&
+    r.declared.w === r.actual.w && r.declared.h === r.actual.h);
+  const undetermined = rows.filter(r => !r.declared || !r.actual);
+
+  let html = `<div class="summary">
+    <span class="pill total">${rows.length} total</span>
+    <span class="pill ok">${matches.length} match</span>
+    <span class="pill bad">${mismatches.length} mismatch</span>
+  </div>`;
+
+  html += '<table><thead><tr><th>File</th><th>Filename says</th><th>Actual pixels</th><th>Status</th></tr></thead><tbody>';
+
+  const sorted = [...mismatches, ...matches, ...undetermined];
+  for (const r of sorted) {
+    let statusBadge, rowClass = '';
+    if (!r.declared) {
+      statusBadge = '<span class="badge skip">no size in name</span>';
+    } else if (r.error) {
+      statusBadge = '<span class="badge skip">unreadable</span>';
+    } else if (r.declared.w === r.actual.w && r.declared.h === r.actual.h) {
+      statusBadge = '<span class="badge ok">match</span>';
+    } else {
+      statusBadge = '<span class="badge bad">mismatch</span>';
+      rowClass = 'bad';
+    }
+    html += `<tr class="${rowClass}">
+      <td class="fname">${escapeHtml(r.name)}</td>
+      <td>${r.declared ? r.declared.w + '×' + r.declared.h : '—'}</td>
+      <td>${r.actual ? r.actual.w + '×' + r.actual.h : (r.error || '—')}</td>
+      <td>${statusBadge}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  html += '<button class="reset" onclick="location.reload()">Check another batch</button>';
+  resultsEl.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+</body>
+</html>
